@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>CourtBoard</title>
+<!-- 앱(src/lib/share.ts)과 같은 포맷: #d=<lz-string compressToEncodedURIComponent(JSON)>[&c=<실시간 코드>].
+     c가 있으면 서버(Supabase cb_get, 앱 src/lib/live.ts와 같은 주소·공개 키)에서 몇 초마다 새 상태를 받아 다시 그린다.
+     서버가 안 되면 d(찍은 순간 스냅샷)를 그대로 보여 준다. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
+<style>
+:root{--bg:#F2F2F7;--card:#fff;--line:#E5E5EA;--text:#1C1C1E;--dim:#6E6E73;--a:#0A5BFF;--aSoft:#E6EEFF;--b:#E8590C;--bSoft:#FFF0E6;--good:#1E8E3E}
+@media (prefers-color-scheme: dark){:root{--bg:#0A111D;--card:#141F31;--line:#22314A;--text:#F4F6FA;--dim:#9FB0C8;--a:#8EC5FF;--aSoft:#0F2440;--b:#FFB877;--bSoft:#33220F;--good:#6FD38B}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR","Hiragino Sans",sans-serif;-webkit-text-size-adjust:100%}
+main{max-width:720px;margin:0 auto;padding:max(16px,env(safe-area-inset-top)) 16px 40px}
+h1{font-size:15px;color:var(--dim);font-weight:600;margin:4px 0 0}
+.round{font-size:34px;font-weight:800;margin:2px 0 12px;font-variant-numeric:tabular-nums}
+.tabs{display:flex;background:var(--line);border-radius:10px;padding:2px;margin-bottom:14px}
+.tabs button{flex:1;border:0;background:transparent;color:var(--dim);font:inherit;font-size:15px;padding:9px 4px;border-radius:8px}
+.tabs button.on{background:var(--card);color:var(--text);font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
+.court{background:var(--card);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:6px}
+.court .h{display:flex;justify-content:space-between;font-size:13px;color:var(--dim);font-weight:700}
+.team{border-radius:12px;padding:6px 10px;font-size:18px;font-weight:700;line-height:1.5}
+.ta{background:var(--aSoft);color:var(--a)}.tb{background:var(--bSoft);color:var(--b)}
+.me{outline:3px solid var(--good);border-radius:6px;padding:0 4px}
+.box{background:var(--card);border-radius:16px;padding:12px 14px;margin-top:12px}
+.box .t{font-size:13px;color:var(--dim);font-weight:600;margin-bottom:6px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{background:var(--bg);border-radius:16px;padding:6px 12px;font-size:15px}
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:16px;overflow:hidden;font-variant-numeric:tabular-nums}
+th,td{padding:11px 8px;text-align:center;font-size:15px;border-bottom:1px solid var(--line)}th{font-size:12px;color:var(--dim);font-weight:600}
+td.n{text-align:left;font-weight:600}tr.me td{background:rgba(30,142,62,.12)}
+.find{width:100%;font:inherit;font-size:16px;padding:11px 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);margin-bottom:12px}
+.mine{background:var(--card);border-radius:16px;padding:14px;margin-bottom:12px;font-size:16px;line-height:1.5}
+.mine b{color:var(--good)}
+.live{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--dim);margin:2px 0 6px}.live i{width:8px;height:8px;border-radius:4px;background:var(--dim);display:inline-block}.live.on i{background:var(--good)}
+.err{padding:40px 8px;text-align:center;color:var(--dim);line-height:1.6}
+footer{margin-top:24px;text-align:center;font-size:12px;color:var(--dim)}footer a{color:var(--dim)}
+</style>
+</head>
+<body>
+<main id="app"><p class="err" id="msg"></p></main>
+<script>
+(function(){
+  var L = (navigator.language||'en').toLowerCase();
+  var SUP = ["ko", "en", "ja", "es", "pt", "fr", "it", "de", "nl", "sv", "da", "nb", "id"];
+  var L2 = L.split('-')[0]; if(L2==='no'||L2==='nn') L2='nb'; if(L2==='in') L2='id';
+  var lang = SUP.indexOf(L2)>=0 ? L2 : 'en';
+  // 한국어·일본어는 '3번 코트·3라운드'처럼 번호 뒤, 나머지는 'Court 3'처럼 앞
+  var SUFFIX = lang==='ko'||lang==='ja';
+  var T = {
+    ko:{queue:'대기 순서',qhint:function(n){return '빈 코트 생기면 위에서 '+n+'명'},round:'라운드',now:'지금',next:'다음',st:'순위',court:'번 코트',rest:'쉬는 사람',none:'모두 출전',find:'내 이름 찾기',mine:function(r,c){return c?'<b>'+r+'라운드 '+c+'번 코트</b>에서 뛰어요':'<b>'+r+'라운드</b>는 쉬어요'},rank:'순위',name:'이름',w:'승',l:'패',d:'득실',p:'득점',bad:'대진 정보를 읽지 못했어요.<br>운영진 폰의 QR을 다시 찍어 주세요.',upd:'라운드가 바뀌면 벽 화면의 QR을 다시 찍어 주세요',live:'실시간',off:'연결 안 됨 · 마지막으로 받은 화면',auto:'점수가 들어오면 화면이 저절로 바뀌어요',ended:'끝난 게임판',load:'불러오는 중…',app:'복식 게임판 앱으로 만들었어요'},
+    en:{queue:'Queue',qhint:function(n){return 'Top '+n+' go to the next open court'},round:'Round',now:'Now',next:'Next',st:'Standings',court:'Court ',rest:'Sitting out',none:'Everyone plays',find:'Find my name',mine:function(r,c){return c?'You play on <b>Court '+c+'</b> in round '+r:'You sit out round '+r},rank:'#',name:'Name',w:'W',l:'L',d:'+/−',p:'Pts',bad:'Couldn’t read this QR.<br>Please scan it again.',upd:'Scan the QR again when the round changes',live:'Live',off:'Offline · showing the last update received',auto:'This page updates by itself as scores come in',ended:'Finished',load:'Loading…',app:'Made with CourtBoard'},
+    ja:{queue:'待ち順',qhint:function(n){return '空いたコートに上から'+n+'人'},round:'ラウンド',now:'今',next:'次',st:'順位',court:'番コート',rest:'休み',none:'全員出場',find:'自分の名前を探す',mine:function(r,c){return c?'第'+r+'ラウンドは<b>'+c+'番コート</b>です':'第'+r+'ラウンドは<b>休み</b>です'},rank:'順位',name:'名前',w:'勝',l:'敗',d:'得失',p:'得点',bad:'組み合わせを読み込めませんでした。<br>幹事のスマホのQRをもう一度読み取ってください。',upd:'ラウンドが変わったら壁のQRをもう一度読み取ってください',live:'リアルタイム',off:'未接続 · 最後に受信した画面',auto:'スコアが入ると画面が自動で変わります',ended:'終了した対戦表',load:'読み込み中…',app:'CourtBoardで作成'},
+    es:{queue:'Cola',qhint:function(n){return 'Los '+n+' primeros van a la próxima pista libre'},round:'Ronda',now:'Ahora',next:'Siguiente',st:'Ranking',court:'Pista ',rest:'Descansan',none:'Todos juegan',find:'Buscar mi nombre',mine:function(r,c){return c?'Juegas en la <b>Pista '+c+'</b> en la ronda '+r:'Descansas en la ronda '+r},rank:'#',name:'Nombre',w:'G',l:'P',d:'+/−',p:'Pts',bad:'No se pudo leer el cuadro.<br>Vuelve a escanear el QR.',upd:'Cuando cambie la ronda, vuelve a escanear el QR de la pantalla',live:'En directo',off:'Sin conexión · última actualización recibida',auto:'Esta página se actualiza sola con cada resultado',ended:'Terminado',load:'Cargando…',app:'Hecho con CourtBoard'},
+    pt:{queue:'Fila',qhint:function(n){return 'Os '+n+' primeiros vão para a próxima quadra livre'},round:'Rodada',now:'Agora',next:'Próxima',st:'Ranking',court:'Quadra ',rest:'De folga',none:'Todos jogam',find:'Achar meu nome',mine:function(r,c){return c?'Você joga na <b>Quadra '+c+'</b> na rodada '+r:'Você está de folga na rodada '+r},rank:'#',name:'Nome',w:'V',l:'D',d:'+/−',p:'Pts',bad:'Não foi possível ler a tabela.<br>Escaneie o QR de novo.',upd:'Quando a rodada mudar, escaneie de novo o QR da tela',live:'Ao vivo',off:'Sem conexão · última atualização recebida',auto:'Esta página se atualiza sozinha a cada placar',ended:'Encerrado',load:'Carregando…',app:'Feito com CourtBoard'},
+    fr:{queue:'File d’attente',qhint:function(n){return 'Les '+n+' premiers vont au prochain terrain libre'},round:'Tour',now:'En cours',next:'À suivre',st:'Classement',court:'Terrain ',rest:'Au repos',none:'Tout le monde joue',find:'Trouver mon nom',mine:function(r,c){return c?'Vous jouez sur le <b>Terrain '+c+'</b> au tour '+r:'Vous êtes au repos au tour '+r},rank:'#',name:'Nom',w:'V',l:'D',d:'+/−',p:'Pts',bad:'Impossible de lire ce tirage.<br>Scannez à nouveau le QR.',upd:'Quand le tour change, scannez à nouveau le QR au mur',live:'En direct',off:'Hors ligne · dernière mise à jour reçue',auto:'Cette page se met à jour toute seule à chaque score',ended:'Terminé',load:'Chargement…',app:'Créé avec CourtBoard'},
+    it:{queue:'Coda',qhint:function(n){return 'I primi '+n+' al prossimo campo libero'},round:'Turno',now:'Ora',next:'Prossimo',st:'Classifica',court:'Campo ',rest:'A riposo',none:'Giocano tutti',find:'Trova il mio nome',mine:function(r,c){return c?'Giochi sul <b>Campo '+c+'</b> nel turno '+r:'Nel turno '+r+' riposi'},rank:'#',name:'Nome',w:'V',l:'S',d:'+/−',p:'Pt',bad:'Impossibile leggere gli accoppiamenti.<br>Inquadra di nuovo il QR.',upd:'Quando cambia il turno, inquadra di nuovo il QR sulla parete',live:'In diretta',off:'Offline · ultimo aggiornamento ricevuto',auto:'Questa pagina si aggiorna da sola a ogni punteggio',ended:'Terminato',load:'Caricamento…',app:'Creato con CourtBoard'},
+    de:{queue:'Warteliste',qhint:function(n){return 'Die ersten '+n+' auf den nächsten freien Platz'},round:'Runde',now:'Jetzt',next:'Nächste',st:'Tabelle',court:'Platz ',rest:'Pause',none:'Alle spielen',find:'Meinen Namen finden',mine:function(r,c){return c?'Runde '+r+': du spielst auf <b>Platz '+c+'</b>':'Runde '+r+': du hast <b>Pause</b>'},rank:'#',name:'Name',w:'S',l:'N',d:'+/−',p:'Pkt',bad:'Auslosung konnte nicht gelesen werden.<br>Bitte den QR-Code erneut scannen.',upd:'Wenn die Runde wechselt, den QR-Code an der Wand erneut scannen',live:'Live',off:'Offline · zuletzt empfangener Stand',auto:'Diese Seite aktualisiert sich bei jedem Ergebnis von selbst',ended:'Beendet',load:'Wird geladen…',app:'Erstellt mit CourtBoard'},
+    nl:{queue:'Wachtrij',qhint:function(n){return 'De eerste '+n+' naar de volgende vrije baan'},round:'Ronde',now:'Nu',next:'Volgende',st:'Stand',court:'Baan ',rest:'Rust',none:'Iedereen speelt',find:'Mijn naam zoeken',mine:function(r,c){return c?'Ronde '+r+': je speelt op <b>Baan '+c+'</b>':'Ronde '+r+': je hebt <b>rust</b>'},rank:'#',name:'Naam',w:'W',l:'V',d:'+/−',p:'Ptn',bad:'Kon het schema niet lezen.<br>Scan de QR-code opnieuw.',upd:'Scan de QR-code aan de muur opnieuw als de ronde verandert',live:'Live',off:'Offline · laatst ontvangen stand',auto:'Deze pagina werkt zichzelf bij bij elke score',ended:'Afgelopen',load:'Laden…',app:'Gemaakt met CourtBoard'},
+    sv:{queue:'Kö',qhint:function(n){return 'De '+n+' första går till nästa lediga bana'},round:'Runda',now:'Nu',next:'Nästa',st:'Tabell',court:'Bana ',rest:'Vilar',none:'Alla spelar',find:'Hitta mitt namn',mine:function(r,c){return c?'Du spelar på <b>Bana '+c+'</b> i runda '+r:'Du vilar i runda '+r},rank:'#',name:'Namn',w:'V',l:'F',d:'+/−',p:'P',bad:'Kunde inte läsa lottningen.<br>Skanna QR-koden igen.',upd:'Skanna QR-koden på väggen igen när en ny runda börjar',live:'Live',off:'Offline · senast mottagna läge',auto:'Sidan uppdateras av sig själv när resultat kommer in',ended:'Avslutad',load:'Laddar…',app:'Skapad med CourtBoard'},
+    da:{queue:'Kø',qhint:function(n){return 'De første '+n+' går til næste ledige bane'},round:'Runde',now:'Nu',next:'Næste',st:'Stilling',court:'Bane ',rest:'Sidder over',none:'Alle spiller',find:'Find mit navn',mine:function(r,c){return c?'Du spiller på <b>Bane '+c+'</b> i runde '+r:'Du sidder over i runde '+r},rank:'#',name:'Navn',w:'V',l:'T',d:'+/−',p:'P',bad:'Kunne ikke læse kampprogrammet.<br>Scan QR-koden igen.',upd:'Når runden skifter, så scan QR-koden på væggen igen',live:'Live',off:'Offline · senest modtagne stilling',auto:'Siden opdaterer sig selv, når resultater kommer ind',ended:'Afsluttet',load:'Indlæser…',app:'Lavet med CourtBoard'},
+    nb:{queue:'Kø',qhint:function(n){return 'De '+n+' første går til neste ledige bane'},round:'Runde',now:'Nå',next:'Neste',st:'Tabell',court:'Bane ',rest:'Står over',none:'Alle spiller',find:'Finn navnet mitt',mine:function(r,c){return c?'Du spiller på <b>bane '+c+'</b> i runde '+r:'Du står over i runde '+r},rank:'#',name:'Navn',w:'V',l:'T',d:'+/−',p:'P',bad:'Kunne ikke lese oppsettet.<br>Skann QR-koden på nytt.',upd:'Når runden endres, skann QR-koden på veggen på nytt',live:'Direkte',off:'Frakoblet · sist mottatte oppdatering',auto:'Siden oppdaterer seg selv når resultater kommer inn',ended:'Ferdig',load:'Laster…',app:'Laget med CourtBoard'},
+    id:{queue:'Antrean',qhint:function(n){return n+' teratas ke lapangan kosong berikutnya'},round:'Babak',now:'Sekarang',next:'Berikutnya',st:'Klasemen',court:'Lapangan ',rest:'Istirahat',none:'Semua main',find:'Cari nama saya',mine:function(r,c){return c?'Anda main di <b>Lapangan '+c+'</b> babak '+r:'Anda istirahat di babak '+r},rank:'#',name:'Nama',w:'M',l:'K',d:'+/−',p:'Poin',bad:'Jadwal tidak bisa dibaca.<br>Silakan pindai QR lagi.',upd:'Saat babak berganti, pindai lagi QR di dinding',live:'Langsung',off:'Offline · pembaruan terakhir yang diterima',auto:'Halaman ini berubah sendiri setiap ada skor',ended:'Selesai',load:'Memuat…',app:'Dibuat dengan CourtBoard'}
+  }[lang];
+  document.documentElement.lang = lang;
+  function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+  var m = /[#&]d=([^&]+)/.exec(location.hash||'');
+  var cm = /[#&]c=([A-Za-z0-9]{6,12})/.exec(location.hash||'');
+  var code = cm ? cm[1].toUpperCase() : '';
+  var p = null;
+  try{ if(m){ p = JSON.parse(LZString.decompressFromEncodedURIComponent(m[1])); } }catch(e){ p = null; }
+  if(p && (p.v!==1 || !p.n)) p = null;
+  if(!p && !code){ document.getElementById('msg').innerHTML = T.bad; return; }
+  // 실시간: live 'on'(서버에서 받음) / 'off'(연결 안 됨 — 스냅샷 그대로) / ''(코드 없음)
+  var live = '', seq = -1, ended = false, fails = 0;
+  var LIVE_URL = 'https://apbtwoxoeumwuszlysug.supabase.co', LIVE_KEY = 'sb_publishable_QbtFqkyILdRvho9W1XtX8w_8lceZIZh';
+  var tab = 'now', me = '';
+  try{ me = localStorage.getItem('cb_me')||''; }catch(e){}
+  function nm(i){ return esc(p.n[i]==null?'?':p.n[i]); }
+  function mark(i){ var n=p.n[i]; return (me && n===me)?'<span class="me">'+nm(i)+'</span>':nm(i); }
+  function courtLabel(c){ return SUFFIX?c+T.court:T.court+c; }
+  function courts(list, scores){
+    return '<div class="grid">'+list.map(function(x){
+      var sc = scores && x[3] ? x[3][0]+' : '+x[3][1] : '';
+      return '<div class="court"><div class="h"><span>'+courtLabel(x[0])+'</span><span>'+sc+'</span></div>'+
+        '<div class="team ta">'+x[1].map(mark).join('<br>')+'</div>'+
+        '<div class="team tb">'+x[2].map(mark).join('<br>')+'</div></div>';
+    }).join('')+'</div>';
+  }
+  function queueBox(ids){
+    var per = p.pc||4;
+    return '<div class="box"><div class="t">'+T.queue+' · '+T.qhint(per)+'</div>'+
+      (ids&&ids.length?'<ol style="margin:0;padding-left:22px;line-height:1.9;font-size:16px">'+ids.map(function(i,k){return '<li'+(k<per?' style="font-weight:700"':'')+'>'+mark(i)+'</li>'}).join('')+'</ol>':'<div class="chip">'+T.none+'</div>')+'</div>';
+  }
+  function rest(ids){
+    return '<div class="box"><div class="t">'+(ids&&ids.length?T.rest+' '+ids.length:T.none)+'</div>'+
+      (ids&&ids.length?'<div class="chips">'+ids.map(function(i){return '<span class="chip">'+mark(i)+'</span>'}).join('')+'</div>':'')+'</div>';
+  }
+  function myLine(){
+    if(!me) return '';
+    var idx = p.n.indexOf(me); if(idx<0) return '';
+    var c = 0; (p.m||[]).forEach(function(x){ if(x[1].indexOf(idx)>=0||x[2].indexOf(idx)>=0) c = x[0]; });
+    if(p.k==='c' && !c){ var q = (p.s||[]).indexOf(idx); return '<div class="mine">'+T.queue+' <b>'+(q+1)+'</b></div>'; }
+    return '<div class="mine">'+T.mine(p.r,c)+'</div>';
+  }
+  function render(){
+    var court = p.k==='c';
+    var head = court ? '#'+p.r : (SUFFIX?p.r+T.round:T.round+' '+p.r);
+    var h = '<h1>'+esc(p.t)+'</h1><div class="round">'+head+'</div>';
+    if(live) h += '<div class="live'+(live==='on'?' on':'')+'"><i></i>'+(live==='on'?(ended?T.ended:T.live):T.off)+'</div>';
+    h += '<input class="find" list="names" placeholder="'+T.find+'" value="'+esc(me)+'" id="find"><datalist id="names">'+p.n.map(function(n){return '<option value="'+esc(n)+'">'}).join('')+'</datalist>';
+    h += myLine();
+    h += '<div class="tabs">'+['now','next','st'].filter(function(k){return k!=='next'||p.nm}).map(function(k){return '<button data-k="'+k+'" class="'+(tab===k?'on':'')+'">'+T[k]+'</button>'}).join('')+'</div>';
+    if(tab==='now'){ h += courts(p.m||[], !court) + (court ? queueBox(p.s) : rest(p.s)); }
+    else if(tab==='next'){ h += courts(p.nm||[], false) + rest(p.ns); }
+    else {
+      h += '<table><tr><th>'+T.rank+'</th><th style="text-align:left">'+T.name+'</th><th>'+T.w+'</th><th>'+T.l+'</th><th>'+T.d+'</th><th>'+T.p+'</th></tr>'+
+        (p.st||[]).map(function(r){ return '<tr class="'+(me&&p.n[r[0]]===me?'me':'')+'"><td>'+r[1]+'</td><td class="n">'+nm(r[0])+'</td><td>'+r[2]+'</td><td>'+r[3]+'</td><td>'+(r[4]>0?'+'+r[4]:r[4])+'</td><td>'+r[5]+'</td></tr>'; }).join('')+'</table>';
+    }
+    h += '<footer>'+(code&&live==='on'?T.auto:T.upd)+'<br><br>'+T.app+'</footer>';
+    var app = document.getElementById('app'); app.innerHTML = h;
+    Array.prototype.forEach.call(app.querySelectorAll('.tabs button'), function(b){ b.onclick = function(){ tab = b.getAttribute('data-k'); render(); }; });
+    var f = document.getElementById('find');
+    f.onchange = function(){ me = f.value.trim(); try{ localStorage.setItem('cb_me', me); }catch(e){} render(); };
+  }
+  function draw(){
+    if(!p){ document.getElementById('app').innerHTML = '<p class="err">'+(live==='off'?T.bad:T.load)+'</p>'; return; }
+    // 이름 찾기 칸에 입력 중이면 다시 그리지 않는다(입력이 끊기지 않게) — 칸을 벗어나면 그린다
+    var f = document.getElementById('find');
+    if(f && document.activeElement===f){ f.onblur = function(){ f.onblur = null; draw(); }; return; }
+    render();
+  }
+  function poll(){
+    if(!code) return;
+    if(document.visibilityState==='hidden'){ timer = setTimeout(poll, 4000); return; }
+    var ctl = window.AbortController ? new AbortController() : null;
+    var to = setTimeout(function(){ if(ctl) ctl.abort(); }, 8000);
+    fetch(LIVE_URL+'/rest/v1/rpc/cb_get', { method:'POST', headers:{ apikey:LIVE_KEY, 'Content-Type':'application/json' },
+      body: JSON.stringify({ p_code: code, p_since: seq }), signal: ctl ? ctl.signal : undefined })
+      .then(function(r){ return r.json(); })
+      .then(function(r){
+        clearTimeout(to);
+        if(!r || !r.ok){ throw new Error('nf'); }
+        fails = 0; ended = !!r.ended;
+        var changed = live!=='on';
+        live = 'on';
+        if(r.payload && r.payload.v===1 && r.payload.n){ p = r.payload; seq = r.seq; changed = true; }
+        if(changed) draw();
+        timer = setTimeout(poll, ended ? 30000 : 4000);
+      })
+      .catch(function(){
+        clearTimeout(to);
+        fails++;
+        if(live!=='off' && fails>=2 || !p){ live = 'off'; draw(); }
+        timer = setTimeout(poll, Math.min(30000, 4000*fails));
+      });
+  }
+  var timer = null;
+  document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible' && code){ clearTimeout(timer); poll(); } });
+  draw();
+  poll();
+})();
+</script>
+</body>
+</html>
